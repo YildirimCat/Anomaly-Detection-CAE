@@ -1,6 +1,6 @@
 """
 @Author:    Yıldırım Çat
-@Date:      18.08.2024
+@Date:      20.11.2024
 @Goal:      Zaman serisi verilerinin imgeye dönüştürülmesinden sonra CAE modeliyle anomali tespiti yapılması
 @Method:    İstatistiksel Profil Çıkarma Yaklaşımı (Statistical Profiling Approach)
 @Sources:   https://www.tensorflow.org/tutorials/generative/autoencoder
