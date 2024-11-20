@@ -31,6 +31,7 @@ from sklearn.neighbors import KernelDensity
 
 import os
 import ImageAnomalyDetector
+import AttentionNetworkGen
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
@@ -121,28 +122,44 @@ test_generator = datagen.flow_from_directory(
 #conv_autoencoder = ImageAnomalyDetector()
 
 # Model Training
-""" 
+
 # Functional Sequential Model
 conv_autoencoder = Sequential()
 conv_autoencoder.add(Conv2D(64, (3, 3), activation='relu', padding='same',
                             input_shape=(SIZE, SIZE, 3), activity_regularizer=regularizers.l1(1e-6)))
+
+
+
 conv_autoencoder.add(MaxPooling2D((2, 2), padding='same'))
 conv_autoencoder.add(Dropout(0.2))
 conv_autoencoder.add(Conv2D(32, (3, 3), activation='relu', padding='same'))
+
+conv_autoencoder.add(AttentionNetworkGen.AttentionBlock(32))
+
 conv_autoencoder.add(MaxPooling2D((2, 2), padding='same'))
 conv_autoencoder.add(Dropout(0.2))
 conv_autoencoder.add(Conv2D(16, (3, 3), activation='relu', padding='same'))
+
+conv_autoencoder.add(AttentionNetworkGen.AttentionBlock(16))
+
 conv_autoencoder.add(MaxPooling2D((2, 2), padding='same'))
 conv_autoencoder.add(Dropout(0.2))
 
 # Decoder
 conv_autoencoder.add(Conv2D(16, (3, 3), activation='relu', padding='same'))
 conv_autoencoder.add(UpSampling2D((2, 2)))
+
 conv_autoencoder.add(Dropout(0.2))
 conv_autoencoder.add(Conv2D(32, (3, 3), activation='relu', padding='same'))
+
+conv_autoencoder.add(AttentionNetworkGen.AttentionBlock(32))
+
 conv_autoencoder.add(UpSampling2D((2, 2)))
 conv_autoencoder.add(Dropout(0.2))
 conv_autoencoder.add(Conv2D(64, (3, 3), activation='relu', padding='same'))
+
+conv_autoencoder.add(AttentionNetworkGen.AttentionBlock(64))
+
 conv_autoencoder.add(UpSampling2D((2, 2)))
 conv_autoencoder.add(Dropout(0.2))
 conv_autoencoder.add(Conv2D(3, (3, 3), activation='sigmoid', padding='same'))
@@ -159,8 +176,6 @@ history = conv_autoencoder.fit(
     shuffle=True,
     callbacks=keras.callbacks.EarlyStopping(monitor='val_loss', patience=5, mode='min'),
 )
-
-"""
 
 
 #visualkeras.layered_view(conv_autoencoder, to_file='cae_model.png') # write to disk
@@ -272,7 +287,7 @@ def create_model(dropout_rate = 0.1, l1_reg = 1e-6):
 #conv_autoencoder.decoder.summary()
 
 # Plot Loss
-"""
+
 loss = history.history['loss']
 val_loss = history.history['val_loss']
 epochs = range(1, len(loss) + 1)
@@ -284,7 +299,6 @@ plt.ylabel('Loss')
 plt.legend()
 plt.show()
 
-"""
 
 # Plot Accuracy
 """
@@ -301,14 +315,14 @@ plt.show()
 """
 
 # Save Model
-#conv_autoencoder.save('./cae_model.h5', save_format='tf')  # creates a HDF5 file 'my_model.h5'
+conv_autoencoder.save('./cae_model_new_2.h5', save_format='tf')  # creates a HDF5 file 'my_model.h5'
 #del model  # deletes the existing model
 
 # returns a compiled model
 # identical to the previous one
 #model = load_model('my_model.h5')
 
-conv_autoencoder = load_model('cae_model.h5')
+#conv_autoencoder = load_model('cae_model_new.h5')
 conv_autoencoder.summary()
 
 
@@ -366,172 +380,182 @@ print("Recon. error for the anomaly data is: ", anomaly_error)
 #for layer in conv_autoencoder.layers:
 #    print(layer.name)
 
-encoder_model = Sequential()
-encoder_model.add(Conv2D(64, (3, 3), activation='relu', padding='same', input_shape=(SIZE, SIZE, 3),
-                         weights=conv_autoencoder.get_layer('conv2d').get_weights()))
-encoder_model.add(MaxPooling2D((2, 2), padding='same'))
-encoder_model.add(Conv2D(32, (3, 3), activation='relu', padding='same',
-                         weights=conv_autoencoder.get_layer('conv2d_1').get_weights()))
-encoder_model.add(MaxPooling2D((2, 2), padding='same'))
-encoder_model.add(Conv2D(16, (3, 3), activation='relu', padding='same',
-                         weights=conv_autoencoder.get_layer('conv2d_2').get_weights()))
-encoder_model.add(MaxPooling2D((2, 2), padding='same'))
-encoder_model.summary()
-# encoder_model.input_shape --> (None, 32, 32, 3)
-
-# Get encoded output of input images = Latent space
-encoded_images = encoder_model.predict(train_generator)
-
-# Flatten the encoder output because KDE from sklearn takes 1D vectors as input
-encoder_output_shape = encoder_model.output_shape  # Here, we have 4x4x16
-out_vector_shape = encoder_output_shape[1] * encoder_output_shape[2] * encoder_output_shape[3]
-
-encoded_images_vector = [np.reshape(img, (out_vector_shape)) for img in encoded_images]
-
-# Fit KDE to the image latent data
-kde = KernelDensity(kernel='gaussian', bandwidth=0.2).fit(encoded_images_vector)
-
-# Calculate density and reconstruction error to find their means values for
-# good and anomaly images.
-# We use these mean and sigma to set thresholds.
-def calc_density_and_recon_error(batch_images):
-    density_list = []
-    recon_error_list = []
-    for im in range(0, batch_images.shape[0] - 1):
-        img = batch_images[im]
-        img = img[np.newaxis, :, :, :]
-        encoded_img = encoder_model.predict([[img]])  # Create a compressed version of the image using the encoder
-        encoded_img = [np.reshape(img, (out_vector_shape)) for img in encoded_img]  # Flatten the compressed image
-        density = kde.score_samples(encoded_img)[0]  # get a density score for the new image
-        reconstruction = conv_autoencoder.predict([[img]])
-        reconstruction_error = conv_autoencoder.evaluate([reconstruction], [[img]], batch_size=1)
-        density_list.append(density)
-        recon_error_list.append(reconstruction_error)
-
-    average_density = np.mean(np.array(density_list))
-    stdev_density = np.std(np.array(density_list))
-
-    average_recon_error = np.mean(np.array(recon_error_list))
-    stdev_recon_error = np.std(np.array(recon_error_list))
-
-    return average_density, stdev_density, average_recon_error, stdev_recon_error
+# Repeat prediction process for 10 times
+for i in range(10):
 
 
-# Get average and std dev. of density and recon. error for normal and anomalous images.
-# For this let us generate a batch of images for each.
-train_batch = train_generator.next()[0]
-anomaly_batch = anomaly_generator.next()[0]
+    encoder_model = Sequential()
+    encoder_model.add(Conv2D(64, (3, 3), activation='relu', padding='same', input_shape=(SIZE, SIZE, 3),
+                             weights=conv_autoencoder.get_layer('conv2d').get_weights()))
+    encoder_model.add(MaxPooling2D((2, 2), padding='same'))
+    encoder_model.add(Conv2D(32, (3, 3), activation='relu', padding='same',
+                             weights=conv_autoencoder.get_layer('conv2d_1').get_weights()))
+    encoder_model.add(MaxPooling2D((2, 2), padding='same'))
+    encoder_model.add(Conv2D(16, (3, 3), activation='relu', padding='same',
+                             weights=conv_autoencoder.get_layer('conv2d_2').get_weights()))
+    encoder_model.add(MaxPooling2D((2, 2), padding='same'))
+    encoder_model.summary()
+    # encoder_model.input_shape --> (None, 32, 32, 3)
 
-normal_values = calc_density_and_recon_error(train_batch)
-anomaly_values = calc_density_and_recon_error(anomaly_batch)
+    # Get encoded output of input images = Latent space
+    encoded_images = encoder_model.predict(train_generator)
 
-density_threshold = anomaly_values[0] + 2*anomaly_values[1]
-recon_threshold = anomaly_values[2] + 2*anomaly_values[3]
+    # Flatten the encoder output because KDE from sklearn takes 1D vectors as input
+    encoder_output_shape = encoder_model.output_shape  # Here, we have 4x4x16
+    out_vector_shape = encoder_output_shape[1] * encoder_output_shape[2] * encoder_output_shape[3]
 
-normal_data_mean = np.mean(merged_data[:532])
-normal_data_stdev = np.std(merged_data[:532])
-anomaly_data_mean = np.mean(merged_data[532:])
-anomaly_data_stdev = np.std(merged_data[532:])
+    encoded_images_vector = [np.reshape(img, (out_vector_shape)) for img in encoded_images]
+
+    # Fit KDE to the image latent data
+    kde = KernelDensity(kernel='gaussian', bandwidth=0.2).fit(encoded_images_vector)
+
+    # Calculate density and reconstruction error to find their means values for
+    # good and anomaly images.
+    # We use these mean and sigma to set thresholds.
+    def calc_density_and_recon_error(batch_images):
+        density_list = []
+        recon_error_list = []
+        for im in range(0, batch_images.shape[0] - 1):
+            img = batch_images[im]
+            img = img[np.newaxis, :, :, :]
+            encoded_img = encoder_model.predict([[img]])  # Create a compressed version of the image using the encoder
+            encoded_img = [np.reshape(img, (out_vector_shape)) for img in encoded_img]  # Flatten the compressed image
+            density = kde.score_samples(encoded_img)[0]  # get a density score for the new image
+            reconstruction = conv_autoencoder.predict([[img]])
+            reconstruction_error = conv_autoencoder.evaluate([reconstruction], [[img]], batch_size=1)
+            density_list.append(density)
+            recon_error_list.append(reconstruction_error)
+
+        average_density = np.mean(np.array(density_list))
+        stdev_density = np.std(np.array(density_list))
+
+        average_recon_error = np.mean(np.array(recon_error_list))
+        stdev_recon_error = np.std(np.array(recon_error_list))
+
+        return average_density, stdev_density, average_recon_error, stdev_recon_error
 
 
-def calc_chebyshev_thresholds(k_value):
-    upper_chebyshev_th = normal_data_mean + k_value * anomaly_data_stdev
-    lower_chebyshev_th = normal_data_mean - k_value * anomaly_data_stdev
-    return lower_chebyshev_th, upper_chebyshev_th
+    # Get average and std dev. of density and recon. error for normal and anomalous images.
+    # For this let us generate a batch of images for each.
+    train_batch = train_generator.next()[0]
+    anomaly_batch = anomaly_generator.next()[0]
+
+    normal_values = calc_density_and_recon_error(train_batch)
+    anomaly_values = calc_density_and_recon_error(anomaly_batch)
+
+    density_threshold = anomaly_values[0] + 2*anomaly_values[1]
+    recon_threshold = anomaly_values[2] + 2*anomaly_values[3]
+
+    normal_data_mean = np.mean(merged_data[:532])
+    normal_data_stdev = np.std(merged_data[:532])
+    anomaly_data_mean = np.mean(merged_data[532:])
+    anomaly_data_stdev = np.std(merged_data[532:])
 
 
-# P(∣X−μ∣≥kσ)≤ 1/k**2
-
-def check_chebyshev_inequlity(data_point, lower_chebyshev_th, upper_chebyshev_th):
-    if np.any(data_point < lower_chebyshev_th) or np.any(data_point > upper_chebyshev_th):
-        return True
-    return False
+    def calc_chebyshev_thresholds(k_value):
+        upper_chebyshev_th = normal_data_mean + k_value * anomaly_data_stdev
+        lower_chebyshev_th = normal_data_mean - k_value * anomaly_data_stdev
+        return lower_chebyshev_th, upper_chebyshev_th
 
 
+    # P(∣X−μ∣≥kσ)≤ 1/k**2
 
-# Now, input unknown images and sort as Good or Anomaly
-def check_anomaly(img_path, density_threshold, recon_threshold, lower_chebyshev_th, upper_chebyshev_th):
-    density_threshold = density_threshold  # Set this value based on the above exercise
-    reconstruction_error_threshold = recon_threshold  # Set this value based on the above exercise
-    predictions = np.array([])
-    for image in img_path:
-        img = Image.open(image)
-        img = np.array(img.resize((32, 32), Image.LANCZOS))
-        #plt.imshow(img)
-        img = img / 255.
-        img = img[np.newaxis, :, :, :3] # So as to make PIL image 3-channel, ":3" could be used.
-        encoded_img = encoder_model.predict([[img]])
-        encoded_img = [np.reshape(img, (out_vector_shape)) for img in encoded_img]
-        reconstruction = conv_autoencoder.predict([[img]])
+    def check_chebyshev_inequlity(data_point, lower_chebyshev_th, upper_chebyshev_th):
+        if np.any(data_point < lower_chebyshev_th) or np.any(data_point > upper_chebyshev_th):
+            return True
+        return False
 
-        density = kde.score_samples(encoded_img)[0]
-        reconstruction_error = conv_autoencoder.evaluate([reconstruction], [[img]], batch_size=1)
 
-        data_point = 0
-        chebyshev_result = check_chebyshev_inequlity(data_point, lower_chebyshev_th, upper_chebyshev_th)
-        data_point += 1
 
-        # Anomaly Decision
-        if reconstruction_error < reconstruction_error_threshold or density > density_threshold:
-            print("The image is an anomaly")
-            predictions = np.append(predictions, False)
-        else:
-            print("The image is NOT an anomaly")
-            predictions = np.append(predictions, True)
-    return predictions
+    # Now, input unknown images and sort as Good or Anomaly
+    def check_anomaly(img_path, density_threshold, recon_threshold, lower_chebyshev_th, upper_chebyshev_th):
+        density_threshold = density_threshold  # Set this value based on the above exercise
+        reconstruction_error_threshold = recon_threshold  # Set this value based on the above exercise
+        predictions = np.array([])
+        for image in img_path:
+            img = Image.open(image)
+            img = np.array(img.resize((32, 32), Image.LANCZOS))
+            #plt.imshow(img)
+            img = img / 255.
+            img = img[np.newaxis, :, :, :3] # So as to make PIL image 3-channel, ":3" could be used.
+            encoded_img = encoder_model.predict([[img]])
+            encoded_img = [np.reshape(img, (out_vector_shape)) for img in encoded_img]
+            reconstruction = conv_autoencoder.predict([[img]])
 
-# Load test images and verify whether they are reported as anomalies.
-import glob
+            density = kde.score_samples(encoded_img)[0]
+            reconstruction_error = conv_autoencoder.evaluate([reconstruction], [[img]], batch_size=1)
 
-preds = np.array([])
+            data_point = 0
+            chebyshev_result = check_chebyshev_inequlity(data_point, lower_chebyshev_th, upper_chebyshev_th)
+            data_point += 1
 
-test_path = glob.glob('images/test/test_images/*')
+            # Anomaly Decision
+            if reconstruction_error < reconstruction_error_threshold or density > density_threshold:
+                print("The image is an anomaly")
+                predictions = np.append(predictions, False)
+            else:
+                print("The image is NOT an anomaly")
+                predictions = np.append(predictions, True)
+        return predictions
 
-k_values = np.linspace(0.1, 3, 15)
+    # Load test images and verify whether they are reported as anomalies.
+    import glob
 
-rocs = []
-# Display
-def display_stats(predictions, labels):
-    print("Accuracy = {}".format(accuracy_score(labels, predictions)))
-    print("Precision = {}".format(precision_score(labels, predictions)))
-    print("Recall = {}".format(recall_score(labels, predictions)))
-    print("F1-Score = {}".format(f1_score(labels, predictions)))
-
-    fpr, tpr, thresholds = roc_curve(labels, predictions)
-    roc_auc = auc(fpr, tpr)
-    rocs.append(roc_auc)
-    print('ROC AUC Score = {}'.format(roc_auc))
-
-    print(classification_report(labels, predictions, digits=3))
-
-    LABELS = ["Anomaly", "Normal"]
-
-    conf_matrix = confusion_matrix(labels, predictions)
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(conf_matrix, xticklabels=LABELS, yticklabels=LABELS, annot=True, fmt="d");
-    plt.title("Confusion matrix")
-    plt.ylabel('True class')
-    plt.xlabel('Predicted class')
-    plt.show()
-
-    plt.plot(fpr, tpr, linewidth=5, label='AUC = %0.3f' % roc_auc)
-    plt.plot([0, 1], [0, 1], linewidth=5)
-    plt.xlim([-0.01, 1])
-    plt.ylim([0, 1.01])
-    plt.legend(loc='lower right')
-    plt.title('Receiver operating characteristic curve (ROC)')
-    plt.ylabel('True Positive Rate')
-    plt.xlabel('False Positive Rate')
-    plt.show()
-
-# Test images verification
-for k_value in k_values:
-    lower_chebyshev, upper_chebyshev = calc_chebyshev_thresholds(k_value)
-    preds = np.append(preds, check_anomaly(test_path, density_threshold, recon_threshold, lower_chebyshev, upper_chebyshev))
-    print(preds)
-
-    preds = preds.astype(np.bool_)
-    preds = tf.convert_to_tensor(preds)
-    display_stats(preds, labels)
     preds = np.array([])
+
+    test_path = glob.glob('images/test/test_images/*')
+
+    k_values = np.linspace(0.1, 3, 1)
+
+    rocs = []
+    f1s = []
+    # Display
+    def display_stats(predictions, labels):
+        print("Accuracy = {}".format(accuracy_score(labels, predictions)))
+        print("Precision = {}".format(precision_score(labels, predictions)))
+        print("Recall = {}".format(recall_score(labels, predictions)))
+        print("F1-Score = {}".format(f1_score(labels, predictions)))
+
+        f1s.append(f1_score(labels, predictions))
+
+        fpr, tpr, thresholds = roc_curve(labels, predictions)
+        roc_auc = auc(fpr, tpr)
+        rocs.append(roc_auc)
+        print('ROC AUC Score = {}'.format(roc_auc))
+
+        print(classification_report(labels, predictions, digits=3))
+
+        LABELS = ["Anomaly", "Normal"]
+
+        conf_matrix = confusion_matrix(labels, predictions)
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(conf_matrix, xticklabels=LABELS, yticklabels=LABELS, annot=True, fmt="d");
+        plt.title("Confusion matrix")
+        plt.ylabel('True class')
+        plt.xlabel('Predicted class')
+        plt.show()
+
+        plt.plot(fpr, tpr, linewidth=5, label='AUC = %0.3f' % roc_auc)
+        plt.plot([0, 1], [0, 1], linewidth=5)
+        plt.xlim([-0.01, 1])
+        plt.ylim([0, 1.01])
+        plt.legend(loc='lower right')
+        plt.title('Receiver operating characteristic curve (ROC)')
+        plt.ylabel('True Positive Rate')
+        plt.xlabel('False Positive Rate')
+        plt.show()
+
+    # Test images verification
+    for k_value in k_values:
+        lower_chebyshev, upper_chebyshev = calc_chebyshev_thresholds(k_value)
+        preds = np.append(preds, check_anomaly(test_path, density_threshold, recon_threshold, lower_chebyshev, upper_chebyshev))
+        print(preds)
+
+        preds = preds.astype(np.bool_)
+        preds = tf.convert_to_tensor(preds)
+        display_stats(preds, labels)
+        preds = np.array([])
+
+print(f"F1 Scores:{f1s}")
+print(f"Average F1 Score: {sum(f1s) / len(f1s)}")
 print(rocs)
